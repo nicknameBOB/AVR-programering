@@ -1,0 +1,221 @@
+/*
+ * Dag3_LF.c
+ *
+ * Created: 02.04.1968 21:46:40
+ * Author : Jørgen Steen
+ * Skjerm på ext3
+ * io1 er på ext1
+ * Dette programmet tar en måling hvert sekund å skriver det til skjermen
+ * Det tar også og lager en gjennomsnitsmåling fra det siste minutet
+ */ 
+
+
+/***************************|Define's|***********************************/
+#define F_CPU 3333333UL									//3.33... MHz
+/************************************************************************/
+
+/***************************|Include|************************************/
+#include <avr/io.h>										// includes standard IO støff
+#include <avr/interrupt.h>								// include interrupt
+#include "display.h"									// include display lib
+#include <stdlib.h>										// include standard lib
+/************************************************************************/
+
+
+/***************************|Define I\O|*********************************/
+#define LED1 (1<<0)										// LED 1 PB0
+#define LED2 (1<<1)										// LED 2 PB1
+#define LED3 (1<<4)										// LED 3 PB4
+#define button1 (1<<5)									// button1 PA5
+#define button2 (1<<6)									// button2 PA6
+#define button3 (1<<7)									// button3 PA7
+#define button1_check (!(PORTA.IN & button1_bm))		// (!(PORTA.IN & button1_bm)) returns true if statement is correct
+#define button2_check (!(PORTA.IN & button2_bm))		// (!(PORTA.IN & button2_bm)) returns true if statement is correct
+#define button3_check (!(PORTA.IN & button3_bm))		// (!(PORTA.IN & button3_bm)) returns true if statement is correct
+
+/***************************|Define Variabels|*********************************/
+#define t1 1000											// gives t1 the value of 1000, T = 1ms, T*1000=1s
+#define t2 60											// 60 sec, 1 minute 
+uint32_t timer1;										// unassigned int 32 bit
+uint8_t sekund = t2;									// unassigned int 8 bit
+
+uint32_t ADC_SUM = 0;									// unassigned int 32 bit
+uint16_t ADC_AVRG = 0;									// unassigned int 16 bit
+uint16_t measurement_nr = 0;							// unassigned int 16 bit
+char ADC_AVRG_s[16] = "?";								// Average value starts as question mark
+
+#define TRUE 1											// TRUE now has the value of 1
+#define FALSE 0											// FALSE now has the value of 0
+
+uint8_t button1_flag = FALSE;							// Setts button1_flag to FALSE by default and 8 bit unsigned int
+uint8_t ADC_readflag = FALSE;							// Setts ADC_readflag
+uint8_t minut = FALSE;
+
+uint16_t ADC_result = FALSE;							// 
+uint16_t ADC_value = FALSE;								// 
+uint32_t ADC_AVRG_kalk = FALSE;							// 
+/************************************************************************************/
+
+
+
+/***************************| General IO init's |************************************/
+void Generelt_init(void)
+{
+	PORTB.DIR |= ( LED3 );					//Set LED0/LED3 as output
+	PORTB.DIR |= ( LED1 );					//Set LED1 as output
+	PORTB.DIR |= ( LED2 );					//Set LED2 as output
+	
+	PORTA.DIR &= ~button1 & ~button2 & ~button3; // setts PA(5,6,7) as input 
+	
+	PORTA.PIN5CTRL |= (1 << PORT_PULLUPEN_bp); //Enable pull-up on button BUTTON_1 (pin PA5)
+	PORTA.PIN6CTRL |= (1 << PORT_PULLUPEN_bp); //Enable pull-up on button BUTTON_1 (pin PA6)
+	PORTA.PIN7CTRL |= (1 << PORT_PULLUPEN_bp); //Enable pull-up on button BUTTON_1 (pin PA7)
+}
+/************************************************************************************/
+
+
+/***************************| Check button function |********************************/
+void button_check(void){
+	if (button1_check)						// chefs if butter is pressed
+	{
+		if (button1_flag == FALSE)
+		{
+			button1_flag = TRUE ;			// setts button1_flag true(1)
+			PORTB.OUT ^= LED2;				// toggles LED2
+		}
+	}
+		else
+		{
+		button1_flag = FALSE;				// debauching, returns to FALSE (0)
+		}
+
+}
+/************************************************************************************/
+
+
+/***************************| Timer Check |******************************************/
+void timer_check(void)
+{
+	if (timer1 == 0)
+	{
+		ADC_readflag = TRUE;			// setter avlesning flag høyt hvert t1
+		timer1 = t1;					// 
+		sekund--;						// subtracter's for every iteration
+	}
+	if (sekund <=0)
+	{
+		sekund = t2; 
+		minut = TRUE;					//sier ifra når et minut har gått
+	}
+}
+/************************************************************************************/
+
+
+/***************************| Timer intitialasation |********************************/
+void timer_init(void){
+	TCA0.SINGLE.CTRLA |= 0b00001101;				// prescale 256. 3333333/256= 13000hz
+	TCA0.SINGLE.INTCTRL |= (1<<TCA_SINGLE_OVF_bp);	// Next we Enable timer interrupts on overflow
+	TCA0.SINGLE.PER = 13;							// 13000hz/13 = 1000hz = 1ms
+	sei();											// Enabler global interrupts (ISR)
+	timer1 = t1;//									// resets timer to 1000
+	
+}
+/************************************************************************************/
+
+
+/**************************| ADC read, calulate and print |**************************/
+//Input må være en verdi mellom 0-16.
+uint16_t ADC_les(uint8_t input)
+{
+	ADC0.MUXPOS = input;					//Velger input for ADC. nr6 lyssensor
+	ADC0.COMMAND |= ADC_STCONV_bm;			//stater avlesning
+	measurement_nr++;						//teller målinger
+	while(ADC0.COMMAND & ADC_STCONV_bm){}	//venter til måling er ferdig før resultatet blir returnert
+	ADC_result = ADC0.RES;					//
+	return ADC_result;						//
+}
+void measure_and_print(void)
+{
+
+	if (minut == TRUE)
+	{
+		minut = FALSE;					// reset minute
+		ADC_AVRG_kalk = ADC_SUM/measurement_nr; //lager gjennomsnitt av styrken
+		ADC_AVRG = ADC_AVRG_kalk;		// ADC_AVRG is sett to ADC AVRG kalk
+		ADC_SUM = 0;					// reset ADC sum to 0
+		measurement_nr = 0;				// reset measurement to 0 
+		itoa(ADC_AVRG,ADC_AVRG_s,10);   // integer to ASCII, 10-talls systemet
+		
+	}
+	if (ADC_readflag == TRUE)
+	{
+		ADC_readflag = FALSE;				// reset ADC read flag
+		ADC_value = ADC_les(0x6);			// ber ADC ta en måling av ADC6
+		ADC_SUM = ADC_SUM + ADC_value;		// adds ADC sum and ADC value, makes it the new ADC sum value
+		char buffer[16];		
+			 
+		itoa(ADC_value,buffer,10);		// integer to ASCII, ti-talls systemet
+		DISP_clear();					// clears display
+		DISP_print("ADC Value: ");		// printer "ADC Value" to display
+		DISP_print(buffer);				// prints the value for the buffer to Display
+		DISP_print("\n");				// shifts to new line
+		
+		itoa(ADC_value,buffer,2);		// integer to ASCII, bainery representation
+		DISP_print("0b");				// prints "0b" to display
+		DISP_print(buffer);				// prints buffer value to display 
+		DISP_print("\n");				// shifts to new line
+		
+		DISP_print("ADC AVRG: ");		// printer "ADC AVRG:" to display
+		DISP_print(ADC_AVRG_s);			// prints ADC AVRAGE Value to display
+		DISP_print("\n");				// shifts to new line
+		
+		//uint32_t milivolt_calc = ((uint32_t)ADC_value*3300)/1024;  //>>10;
+		uint16_t milivolt = ((float)ADC_value*3300)/1024; //milivolt_calc;
+		itoa(milivolt,buffer,10);		// integer to ASCII , 10-talls systemet
+		DISP_print("ADC mV: ");			// prints "ADC mV:" to display
+		DISP_print(buffer);				// prints buffer value to display
+		DISP_print("\n");				// shits to new line
+
+	}
+	
+}	
+/************************************************************************************/
+
+
+/**************************| ADC intitalsation |*************************************/
+void ADC_init(void){
+	ADC0.CTRLA |= (1<<ADC_ENABLE_bp);											// Enabler 10bit ADC
+	ADC0.CTRLC |= ADC_PRESC_DIV32_gc | ADC_REFSEL_VDDREF_gc | ADC_SAMPCAP_bm;   // prescaling 32, 3,3V referanse, øker inngangimpedansen
+}
+/************************************************************************************/
+
+
+
+/**************************| MAIN LOOP |*********************************************/
+int main(void)
+{
+	DISP_init();		// initiates display
+	Generelt_init();	// initiates General init's
+	timer_init();		// initiates timer
+	ADC_init();			// initiates ADC
+
+    while (1) 
+    {
+		timer_check();				// counts time
+		measure_and_print();	    // checks if it's time for measurement and print
+    }
+}
+/************************************************************************************/
+
+
+/**************************| INterupt |**********************************************/
+ISR(TCA0_OVF_vect)
+{
+	if (timer1>0)
+	{
+		timer1 = timer1-1;									// cunts down time
+	}
+
+	TCA0.SINGLE.INTFLAGS |= (1<<TCA_SINGLE_OVF_bp);			// resets TCA interrupt timer
+}
+/************************************************************************************/
